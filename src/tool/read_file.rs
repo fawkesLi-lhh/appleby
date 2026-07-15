@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, fmt::Write};
 
 use crate::{
     ToolSpec,
@@ -86,6 +86,12 @@ impl Tool for ReadFileTool {
                 "required": ["path", "start_line", "end_line"]
             }),
         }
+    }
+
+    fn show_to_human(&self, writer: &mut dyn Write, input: &Value) -> Result<(), anyhow::Error> {
+        let path = input.get("path").and_then(|v| v.as_str()).context("Invalid path")?;
+        write!(writer, "Reading file: {}", path)?;
+        Ok(())
     }
 }
 

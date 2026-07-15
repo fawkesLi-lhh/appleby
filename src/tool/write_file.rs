@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, fmt::Write};
 
 use crate::{
     ToolSpec,
@@ -62,6 +62,12 @@ impl Tool for WriteFileTool {
                 "required": ["path", "content"]
             }),
         }
+    }
+
+    fn show_to_human(&self, writer: &mut dyn Write, input: &Value) -> Result<(), anyhow::Error> {
+        let path = input.get("path").and_then(|v| v.as_str()).context("Invalid path")?;
+        write!(writer, "Writing file: {}", path)?;
+        Ok(())
     }
 }
 

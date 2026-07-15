@@ -13,8 +13,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             anthropic_api_key: "lhh-claude2026".to_string(),
-            anthropic_base_url: "gpt-5.5".to_string(),
-            anthropic_model: "http://sg2api.guanzhao12.com:8318/v1".to_string(),
+            anthropic_model: "gpt-5.5".to_string(),
+            anthropic_base_url: "http://sg2api.guanzhao12.com:8318/v1".to_string(),
         }
     }
 }

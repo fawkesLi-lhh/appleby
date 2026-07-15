@@ -8,22 +8,44 @@ use anthropic_ai_sdk::types::message::{
 use anyhow::Context;
 use inquire::Text;
 
+#[auto_context::auto_context]
 pub async fn loop_workflow(state: &mut LoopState) -> Result<(), anyhow::Error> {
     loop {
-        let query = Text::new("--- How can I help you?")
+        let query = Text::new("Human: ")
             .prompt()
             .context("An error happened or user cancelled the input.")?;
 
-        //break out of the loop if the user enters exit()
         if query.trim() == "exit()" {
             break;
         }
         state.push_message(Message::new_text(Role::User, query));
         agent_loop(state).await?;
+        let Some(final_content) = state.get_context().last() else {
+            continue;
+        };
+        println!("Assistant: {}", extract_text(&final_content.content));
     }
     Ok(())
 }
 
+fn extract_text(content: &MessageContent) -> String {
+    match content {
+        MessageContent::Text { content } => content.clone(),
+        MessageContent::Blocks { content } => content
+            .iter()
+            .filter_map(|block| {
+                if let ContentBlock::Text { text } = block {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+#[auto_context::auto_context]
 pub async fn agent_loop(state: &mut LoopState) -> Result<(), anyhow::Error> {
     loop {
         let request = CreateMessageParams::new(RequiredMessageParams {
@@ -35,11 +57,9 @@ pub async fn agent_loop(state: &mut LoopState) -> Result<(), anyhow::Error> {
         .with_tools(state.tools.values().map(|tool| tool.tool_spec()).collect());
 
         let response = state.client.create_message(Some(&request)).await?;
-
-        state.push_message(Message::new_blocks(
-            Role::Assistant,
-            response.content.clone(),
-        ));
+        print_assistant_thinking(&response.content);
+        let message = Message::new_blocks(Role::Assistant, response.content.clone());
+        state.push_message(message.clone());
 
         if let Some(stop_reason) = response.stop_reason
             && !matches!(stop_reason, StopReason::ToolUse)
@@ -50,6 +70,23 @@ pub async fn agent_loop(state: &mut LoopState) -> Result<(), anyhow::Error> {
         let tool_result = state.execute_tool_call(&response.content).await?;
 
         state.push_message(Message::new_blocks(Role::User, tool_result));
+    }
+}
+
+fn print_assistant_thinking(blocks: &Vec<ContentBlock>) {
+    for block in blocks {
+        match block {
+            ContentBlock::Text { text } => {
+                println!("Assistant Text: {}", text);
+            }
+            ContentBlock::Thinking {
+                thinking,
+                signature: _,
+            } => {
+                println!("Assistant Thinking: {}", thinking);
+            }
+            _ => {}
+        }
     }
 }
 

@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, fmt::Write};
 use std::collections::HashMap;
 
 use crate::ToolSpec;
@@ -10,12 +10,10 @@ mod bash;
 mod edit_file;
 mod read_file;
 mod write_file;
-mod ask_help;
 use bash::bash_tool;
 use edit_file::edit_file_tool;
 use read_file::read_file_tool;
 use write_file::write_file_tool;
-use ask_help::ask_help_tool;
 
 pub fn toolmap() -> HashMap<String, Box<dyn Tool>> {
     HashMap::from([
@@ -23,7 +21,6 @@ pub fn toolmap() -> HashMap<String, Box<dyn Tool>> {
         ("read_file".to_string(), read_file_tool()),
         ("write_file".to_string(), write_file_tool()),
         ("edit_file".to_string(), edit_file_tool()),
-        ("ask_help".to_string(), ask_help_tool()),
     ])
 }
 
@@ -32,6 +29,7 @@ pub trait Tool {
     async fn invoke(&self, input: &Value) -> Result<String>;
     fn name(&self) -> Cow<'_, str>;
     fn tool_spec(&self) -> ToolSpec;
+    fn show_to_human(&self, writer: &mut dyn Write, input: &Value) -> Result<(), anyhow::Error>;
 }
 
 #[auto_context::auto_context]

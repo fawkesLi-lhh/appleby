@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, fmt::Write};
 
 use crate::{
     ToolSpec,
@@ -91,6 +91,12 @@ impl Tool for EditFileTool {
                 "required": ["file_path", "old_string", "new_string", "replace_all"]
             }),
         }
+    }
+
+    fn show_to_human(&self, writer: &mut dyn Write, input: &Value) -> Result<(), anyhow::Error> {
+        let file_path = input.get("file_path").and_then(|v| v.as_str()).context("Invalid path")?;
+        write!(writer, "Editing file: {}", file_path)?;
+        Ok(())
     }
 }
 

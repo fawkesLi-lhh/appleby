@@ -1,5 +1,4 @@
-use std::{borrow::Cow, time::Duration};
-
+use std::{borrow::Cow, fmt::Write, time::Duration};
 use crate::{ToolSpec, tool::Tool};
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
@@ -83,6 +82,12 @@ impl Tool for BashTool {
                 "required": ["command"]
             }),
         }
+    }
+
+    fn show_to_human(&self, writer: &mut dyn Write, input: &Value) -> Result<(), anyhow::Error> {
+        let command = input.get("command").and_then(|v| v.as_str()).context("Invalid command")?;
+        write!(writer, "Bash Tool: {}", command)?;
+        Ok(())
     }
 }
 

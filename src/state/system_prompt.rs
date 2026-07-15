@@ -21,8 +21,6 @@ impl Default for SystemPrompt {
     fn default() -> Self {
         Self("
 You are a helpful assistant. You can use the following tools to help the user.
-If the tool fails to meet the requirements, you can invoke the function ask for help
-and clearly and explicitly state what kind of tool you need to fulfill the requirements.
         ".to_string())
     }
 }
