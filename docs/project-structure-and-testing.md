@@ -57,6 +57,14 @@ Appleby/
 │   │   └── edit_file.rs
 │   ├── config.rs
 │   └── lib.rs
+├── tests/
+│   ├── support/
+│   │   └── mod.rs
+│   ├── fixtures/
+│   │   └── files/
+│   │       ├── multiline.txt
+│   │       └── unicode.txt
+│   └── tool_workflow.rs
 ├── target/
 ├── .gitignore
 ├── Cargo.lock
@@ -265,41 +273,63 @@ src/tool/
 
 约定：不手工编辑其中内容，不在项目文档中依赖其内部目录结构。
 
-## 4. 推荐的测试目录结构
+## 4. 测试目录结构与当前状态
 
-当前执行 `cargo test -- --list` 的结果是：库、`appleby` 二进制、`r1` 二进制和文档测试均为 **0 个测试**。
+截至 2026-07-15，项目已经建立第一批 Tool 测试。执行 `cargo test --all-targets` 的结果为：
 
-推荐逐步形成以下结构：
+- Tool 模块单元测试：**25 个通过**；
+- `tests/tool_workflow.rs` 集成测试：**3 个通过**；
+- 总计：**28 个通过，0 个失败**；
+- `appleby` 和 `r1` 二进制目前仍没有单独测试。
+
+当前已经落地的测试结构：
 
 ```text
 Appleby/
 ├── src/
-│   ├── config.rs                 # 文件底部放配置模块单元测试
 │   └── tool/
-│       ├── mod.rs                # safe_path、toolset 单元测试
+│       ├── mod.rs                # toolset、safe_path 单元测试
 │       ├── bash.rs               # BashTool 单元测试
 │       ├── read_file.rs          # ReadFileTool 单元测试
 │       ├── write_file.rs         # WriteFileTool 单元测试
 │       └── edit_file.rs          # EditFileTool 单元测试
 └── tests/
     ├── support/
-    │   └── mod.rs                # 多个集成测试共享的辅助函数
+    │   └── mod.rs                # 工作区临时目录和 fixture 路径辅助函数
     ├── fixtures/
-    │   ├── config/
-    │   │   ├── valid.toml
-    │   │   ├── missing_field.toml
-    │   │   └── invalid.toml
     │   └── files/
     │       ├── multiline.txt
     │       └── unicode.txt
-    ├── tool_workflow.rs          # 多工具组合的集成测试
-    ├── config_loading.rs         # 从外部视角验证配置加载
-    ├── cli_r1.rs                 # r1 命令行行为测试
-    ├── cli_appleby.rs            # 使用 mock HTTP 服务测试主程序
-    └── live_api.rs               # 可选；真实服务冒烟测试，默认 #[ignore]
+    └── tool_workflow.rs          # 多工具组合和公开 API 集成测试
+```
+
+后续按需求继续补充：
+
+```text
+tests/
+├── fixtures/
+│   └── config/
+│       ├── valid.toml
+│       ├── missing_field.toml
+│       └── invalid.toml
+├── config_loading.rs             # 从外部视角验证配置加载
+├── cli_r1.rs                     # r1 命令行行为测试
+├── cli_appleby.rs                # 使用 mock HTTP 服务测试主程序
+└── live_api.rs                   # 可选；真实服务冒烟测试，默认 #[ignore]
 ```
 
 ## 5. 测试应该分别放在哪里
+
+当前 Tool 测试覆盖情况：
+
+| 模块 | 已覆盖行为 | 暂未覆盖 |
+| --- | --- | --- |
+| `tool/mod.rs` | 工具注册、工作区内现有/新路径、工作区外路径、`..` 逃逸 | 符号链接逃逸的跨平台测试 |
+| `read_file.rs` | 指定范围、真实行号、Unicode、起始行为 0、反向范围 | 空文件、超出文件范围、50,000 字符截断 |
+| `write_file.rs` | 新文件、父目录创建、覆盖文件、空内容、Unicode、工作区逃逸 | 权限错误和底层 I/O 错误上下文 |
+| `edit_file.rs` | 唯一替换、重复匹配、全部替换、空/缺失文本、工作区逃逸 | 文件不存在和权限错误 |
+| `bash.rs` | Tool Spec、stdout、stderr、空输出、危险命令 | 非零退出码契约、截断、超时和无 `sh` 环境 |
+| `tests/tool_workflow.rs` | `write → read → edit → read`、公开 API 路径逃逸、Unicode fixture | Bash 与文件工具的更高层组合 |
 
 ### 5.1 模块内单元测试：放在 `src/**/*.rs`
 
@@ -396,15 +426,16 @@ Cargo 会把 `tests/` 第一层的每个 `.rs` 文件编译成独立测试 crate
 
 #### `tests/tool_workflow.rs`
 
-建议通过 `appleby::tool::toolset()` 完成真实组合流程：
+当前已经通过 `appleby::tool::toolset()` 实现以下真实组合流程：
 
-1. `write_file` 创建临时文件；
-2. `read_file` 验证内容；
-3. `edit_file` 修改内容；
-4. 再次 `read_file` 验证结果；
-5. 验证工作区逃逸会被拒绝。
+1. `write_file` 创建临时文件和嵌套父目录；
+2. `read_file` 验证完整内容和真实行号；
+3. `edit_file` 修改指定内容；
+4. 再次 `read_file` 验证修改结果；
+5. 验证公开 `write_file` 接口会拒绝工作区逃逸；
+6. 使用 Unicode fixture 验证公开 `read_file` 接口。
 
-这能验证工具注册表、JSON 输入、trait object 调用和文件系统实现是否真正连通。
+测试使用 `tests/support/mod.rs` 在项目工作区内创建隔离临时目录，以符合 `safe_path()` 的安全边界，同时不污染真实项目文件。这些测试验证了工具注册表、JSON 输入、trait object 调用和文件系统实现已经连通。
 
 #### `tests/config_loading.rs`
 
@@ -464,19 +495,25 @@ fixture 是静态输入和预期输出，不包含 Rust 测试逻辑。
 - 在 CI 中使用受控 secret；
 - 单独执行：`cargo test --test live_api -- --ignored`。
 
-## 6. 推荐测试依赖
+## 6. 测试依赖
 
-可以按实际需求加入：
+当前已经加入：
 
 ```toml
 [dev-dependencies]
 tempfile = "3"      # 隔离文件系统测试
+```
+
+`tempfile` 同时用于模块内单元测试和 `tests/tool_workflow.rs`，临时目录会在测试结束时自动清理。现有 `tokio` 已启用 `full` features，可直接用于 `#[tokio::test]`。
+
+后续编写 CLI 和 API 测试时，再按实际需求加入：
+
+```toml
+[dev-dependencies]
 assert_cmd = "2"    # 启动并断言 binary 行为
 predicates = "3"    # 配合 assert_cmd 断言输出
 wiremock = "0.6"    # mock HTTP API；也可选用同类库
 ```
-
-现有 `tokio` 已启用 `full` features，可直接用于 `#[tokio::test]`。
 
 不要因为“以后可能用到”一次性加入所有测试库；先为实际测试加入最小依赖。
 
@@ -513,37 +550,39 @@ cargo test --test tool_workflow
 cargo test --test cli_appleby
 ```
 
-## 8. 建议实施顺序
+## 8. 实施进度与后续顺序
 
 ### 第一阶段：建立可测试边界
 
-1. 配置加载改为返回 `Result`，避免 `unwrap()`；
-2. 增加 `Config::load_from(path)`，让测试可使用临时配置；
-3. 调整路径校验，使新文件写入既安全又可测试；
-4. 让 Bash 超时时长可注入；
-5. 把 `appleby` 主程序中的对话逻辑下沉到库模块。
+- [ ] 配置加载改为返回 `Result`，避免 `unwrap()`；
+- [ ] 增加 `Config::load_from(path)`，让测试可使用临时配置；
+- [x] 调整 `safe_path()`：支持工作区内不存在的新文件，同时阻止工作区逃逸；
+- [x] 修复 `read_file` 的 1-based inclusive 行范围和真实行号；
+- [ ] 让 Bash 超时时长可注入；
+- [ ] 把 `appleby` 主程序中的对话逻辑下沉到库模块。
 
 ### 第二阶段：高价值单元测试
 
-优先覆盖：
-
-1. `safe_path` 的工作区逃逸防护；
-2. `write_file` 新文件和父目录创建；
-3. `edit_file` 唯一匹配与全量替换；
-4. `read_file` 行号和范围边界；
-5. 配置错误处理；
-6. Bash 危险命令和超时。
+- [x] `toolset()` 注册信息；
+- [x] `safe_path` 的工作区逃逸防护；
+- [x] `write_file` 新文件、父目录创建、覆盖和空内容；
+- [x] `edit_file` 唯一匹配、重复匹配、全量替换和错误输入；
+- [x] `read_file` 行号、范围和 Unicode；
+- [x] Bash stdout、stderr、空输出和危险命令；
+- [ ] 配置错误处理；
+- [ ] Bash 可注入超时和输出截断。
 
 ### 第三阶段：组合与 CLI 测试
 
-1. 增加 `tests/tool_workflow.rs`；
-2. 增加配置加载集成测试；
-3. 用 mock API 测试 `appleby`；
-4. 根据 `r1` 是否保留决定是否添加 CLI 测试。
+- [x] 增加 `tests/support/mod.rs` 和文件 fixtures；
+- [x] 增加 `tests/tool_workflow.rs`；
+- [ ] 增加配置加载集成测试；
+- [ ] 用 mock API 测试 `appleby`；
+- [ ] 根据 `r1` 是否保留决定是否添加 CLI 测试。
 
 ### 第四阶段：CI 质量门槛
 
-在 CI 中至少执行：
+本地已经确认 `cargo fmt`、`cargo test --all-targets` 和新增代码的 Clippy 检查可以通过。后续 CI 至少执行：
 
 ```text
 cargo fmt --check
@@ -552,17 +591,44 @@ cargo test --all-targets
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
+严格的 `-D warnings` 当前仍会被项目既有 lint 阻塞，包括 `src/config.rs` 的构造函数写法、`src/bin/appleby.rs` 的未使用导入和初始化方式，以及 `src/tool/edit_file.rs` 生产实现的延迟初始化。应在启用 CI 强制门槛前清理。
+
 等测试稳定后，再增加覆盖率统计；不建议一开始用覆盖率百分比替代关键行为测试。
 
 ## 9. 当前代码中特别值得用测试固定的行为
 
-以下不是目录调整要求，但会直接影响测试设计：
+以下行为会直接影响后续测试设计：
 
 1. `Config::new()` 目前对文件读取和 TOML 解析都使用 `unwrap()`，配置错误会直接 panic；
-2. `safe_path()` 先调用 `canonicalize()`，而不存在的新文件无法 canonicalize，可能导致 `write_file` 无法按设计创建新文件；
-3. `read_file` 的行范围计算需要重点验证 1-based 边界和返回行号；
-4. `bash` 通过 `sh` 启动，在 Windows 环境依赖额外 Shell，且当前黑名单只能覆盖少量字符串形式；
-5. `appleby` 当前调用真实远程接口，不适合直接作为默认自动化测试；
-6. `conf/config.toml` 当前承载凭据字段，测试和文档中都不应复制其真实值。
+2. `safe_path()` 已改为 canonicalize 最近的已存在祖先，再拼回缺失路径，因此 `write_file` 可以创建新文件，同时已有测试覆盖工作区外绝对路径和 `..` 逃逸；
+3. `read_file` 已按 1-based inclusive 语义修复，返回源文件真实行号，并对起始行为 0、反向范围返回错误；
+4. `bash` 通过 `sh` 启动；当前 Windows 开发环境使用 Git for Windows 提供的 `sh.exe`，其他 Windows 环境仍需确认该依赖；
+5. Bash 危险命令检查目前是字符串黑名单，只能覆盖少量明确形式，不能视为完整的命令沙箱；
+6. `appleby` 当前调用真实远程接口，不适合直接作为默认自动化测试；
+7. `conf/config.toml` 当前承载凭据字段，测试和文档中都不应复制其真实值。
 
-这些行为应先通过小范围重构形成清晰契约，再由测试锁定预期结果。
+已经修复的行为由单元测试和 `tests/tool_workflow.rs` 锁定；未完成部分仍应先通过小范围重构形成清晰契约，再添加测试。
+
+## 10. 当前验证结果
+
+2026-07-15 完成 Tool 测试后执行结果：
+
+```text
+cargo test --all-targets
+
+Tool 模块单元测试：25 passed
+Tool 集成测试：3 passed
+总计：28 passed，0 failed
+```
+
+其他检查：
+
+| 检查 | 结果 |
+| --- | --- |
+| `cargo fmt --all -- --check` | 通过 |
+| `cargo test --lib tool` | 25 个测试通过 |
+| `cargo test --test tool_workflow` | 3 个测试通过 |
+| `cargo test --all-targets` | 全部通过 |
+| `git diff --check` | 通过；Git 仅提示 Windows CRLF 转换信息 |
+| 新增代码 Clippy 检查 | 排除项目既有 lint 后通过 |
+| `cargo clippy --all-targets --all-features -- -D warnings` | 未通过；被既有 lint 阻塞，详见第 8 节 |

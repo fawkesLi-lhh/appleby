@@ -1,6 +1,6 @@
 mod support;
 
-use appleby::tool::toolset;
+use appleby::tool::toolmap;
 use serde_json::json;
 
 #[tokio::test]
@@ -8,7 +8,7 @@ async fn file_tools_complete_write_read_edit_workflow() {
     let temp = support::workspace_tempdir();
     let fixture = std::fs::read_to_string(support::fixture_path("files/multiline.txt")).unwrap();
     let path = temp.path().join("nested").join("workflow.txt");
-    let tools = toolset();
+    let tools = toolmap();
 
     let write_result = tools
         .get("write_file")
@@ -69,7 +69,7 @@ async fn file_tools_complete_write_read_edit_workflow() {
 async fn public_write_tool_rejects_path_outside_workspace() {
     let outside = tempfile::tempdir().unwrap();
     let path = outside.path().join("should-not-exist.txt");
-    let tools = toolset();
+    let tools = toolmap();
 
     let error = tools
         .get("write_file")
@@ -88,7 +88,7 @@ async fn public_write_tool_rejects_path_outside_workspace() {
 #[tokio::test]
 async fn public_read_tool_handles_unicode_fixture() {
     let path = support::fixture_path("files/unicode.txt");
-    let tools = toolset();
+    let tools = toolmap();
 
     let result = tools
         .get("read_file")

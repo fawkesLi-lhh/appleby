@@ -10,17 +10,20 @@ mod bash;
 mod edit_file;
 mod read_file;
 mod write_file;
+mod ask_help;
 use bash::bash_tool;
 use edit_file::edit_file_tool;
 use read_file::read_file_tool;
 use write_file::write_file_tool;
+use ask_help::ask_help_tool;
 
-pub fn toolset() -> HashMap<String, Box<dyn Tool>> {
+pub fn toolmap() -> HashMap<String, Box<dyn Tool>> {
     HashMap::from([
         ("bash".to_string(), bash_tool()),
         ("read_file".to_string(), read_file_tool()),
         ("write_file".to_string(), write_file_tool()),
         ("edit_file".to_string(), edit_file_tool()),
+        ("ask_help".to_string(), ask_help_tool()),
     ])
 }
 
@@ -75,7 +78,7 @@ mod tests {
 
     #[test]
     fn toolset_registers_expected_tools() {
-        let tools = toolset();
+        let tools = toolmap();
         let mut names = tools.keys().map(String::as_str).collect::<Vec<_>>();
         names.sort_unstable();
 
