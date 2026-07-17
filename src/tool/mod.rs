@@ -1,9 +1,9 @@
-use std::{borrow::Cow, fmt::Write};
 use std::collections::HashMap;
+use std::{borrow::Cow, fmt::Write};
 
-use crate::ToolSpec;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 mod bash;
@@ -15,12 +15,19 @@ use edit_file::edit_file_tool;
 use read_file::read_file_tool;
 use write_file::write_file_tool;
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Serialize)]
+pub struct ToolSpec {
+    pub name: String,
+    pub description: Option<String>,
+    pub input_schema: Value,
+}
+
 pub fn toolmap() -> HashMap<String, Box<dyn Tool>> {
     HashMap::from([
-        ("bash".to_string(), bash_tool()),
-        ("read_file".to_string(), read_file_tool()),
-        ("write_file".to_string(), write_file_tool()),
-        ("edit_file".to_string(), edit_file_tool()),
+        ("Bash".to_string(), bash_tool()),
+        ("Read".to_string(), read_file_tool()),
+        ("Write".to_string(), write_file_tool()),
+        ("Edit".to_string(), edit_file_tool()),
     ])
 }
 
@@ -80,7 +87,7 @@ mod tests {
         let mut names = tools.keys().map(String::as_str).collect::<Vec<_>>();
         names.sort_unstable();
 
-        assert_eq!(names, ["bash", "edit_file", "read_file", "write_file"]);
+        assert_eq!(names, ["Bash", "Edit", "Read", "Write"]);
         for (registered_name, tool) in tools {
             assert_eq!(tool.name().as_ref(), registered_name);
             assert_eq!(tool.tool_spec().name, registered_name);

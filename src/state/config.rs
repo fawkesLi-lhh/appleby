@@ -1,20 +1,24 @@
-use std::{fs::read_to_string, path::Path, sync::LazyLock};
+use std::{env, fs::read_to_string, path::Path, sync::LazyLock};
 
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Config {
-    pub anthropic_api_key: String,
-    pub anthropic_base_url: String,
-    pub anthropic_model: String,
+    #[serde(alias = "anthropic_api_key")]
+    pub openai_api_key: String,
+    #[serde(alias = "anthropic_base_url")]
+    pub openai_base_url: String,
+    #[serde(alias = "anthropic_model")]
+    pub openai_model: String,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            anthropic_api_key: "lhh-claude2026".to_string(),
-            anthropic_model: "gpt-5.5".to_string(),
-            anthropic_base_url: "http://sg2api.guanzhao12.com:8318/v1".to_string(),
+            openai_api_key: env::var("OPENAI_API_KEY").unwrap_or_default(),
+            openai_base_url: env::var("OPENAI_BASE_URL")
+                .unwrap_or_else(|_| "https://api.openai.com/v1".to_string()),
+            openai_model: env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string()),
         }
     }
 }
@@ -33,10 +37,8 @@ impl Config {
             )
             .unwrap();
         }
-        let config =
-            toml::from_str::<Config>(&read_to_string(".appleby/config.toml").unwrap()).unwrap();
-        config
+        toml::from_str::<Config>(&read_to_string(".appleby/config.toml").unwrap()).unwrap()
     }
 }
 
-pub static CONFIG: LazyLock<Config> = LazyLock::new(|| Config::new());
+pub static CONFIG: LazyLock<Config> = LazyLock::new(Config::new);

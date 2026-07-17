@@ -1,9 +1,6 @@
 use std::{borrow::Cow, fmt::Write};
 
-use crate::{
-    ToolSpec,
-    tool::{Tool, safe_path},
-};
+use crate::tool::{Tool, ToolSpec, safe_path};
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -73,12 +70,12 @@ impl Tool for EditFileTool {
     }
 
     fn name(&self) -> Cow<'_, str> {
-        "edit_file".into()
+        "Edit".into()
     }
 
     fn tool_spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "edit_file".to_string(),
+            name: "Edit".to_string(),
             description: Some("Replace exact text in file. old_string must include enough unchanged surrounding context to uniquely identify the intended text. Line number prefixes are not part of the file content and must never be copied into old_string or new_string".to_string()),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -94,7 +91,10 @@ impl Tool for EditFileTool {
     }
 
     fn show_to_human(&self, writer: &mut dyn Write, input: &Value) -> Result<(), anyhow::Error> {
-        let file_path = input.get("file_path").and_then(|v| v.as_str()).context("Invalid path")?;
+        let file_path = input
+            .get("file_path")
+            .and_then(|v| v.as_str())
+            .context("Invalid path")?;
         write!(writer, "Editing file: {}", file_path)?;
         Ok(())
     }

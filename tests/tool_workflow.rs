@@ -11,7 +11,7 @@ async fn file_tools_complete_write_read_edit_workflow() {
     let tools = toolmap();
 
     let write_result = tools
-        .get("write_file")
+        .get("Write")
         .unwrap()
         .invoke(&json!({
             "path": path,
@@ -22,7 +22,7 @@ async fn file_tools_complete_write_read_edit_workflow() {
     assert!(write_result.starts_with("Wrote 23 bytes to "));
 
     let initial_content = tools
-        .get("read_file")
+        .get("Read")
         .unwrap()
         .invoke(&json!({
             "path": path,
@@ -37,7 +37,7 @@ async fn file_tools_complete_write_read_edit_workflow() {
     );
 
     tools
-        .get("edit_file")
+        .get("Edit")
         .unwrap()
         .invoke(&json!({
             "file_path": path,
@@ -49,7 +49,7 @@ async fn file_tools_complete_write_read_edit_workflow() {
         .unwrap();
 
     let edited_line = tools
-        .get("read_file")
+        .get("Read")
         .unwrap()
         .invoke(&json!({
             "path": path,
@@ -72,7 +72,7 @@ async fn public_write_tool_rejects_path_outside_workspace() {
     let tools = toolmap();
 
     let error = tools
-        .get("write_file")
+        .get("Write")
         .unwrap()
         .invoke(&json!({
             "path": path,
@@ -91,7 +91,7 @@ async fn public_read_tool_handles_unicode_fixture() {
     let tools = toolmap();
 
     let result = tools
-        .get("read_file")
+        .get("Read")
         .unwrap()
         .invoke(&json!({
             "path": path,

@@ -8,7 +8,7 @@ impl SystemPrompt {
         if !Path::new(".appleby").exists() {
             std::fs::create_dir_all(".appleby").unwrap();
         }
-        // create file if not exists 
+        // create file if not exists
         if !Path::new(".appleby/system_prompt.txt").exists() {
             std::fs::write(".appleby/system_prompt.txt", SystemPrompt::default().0).unwrap();
         }
@@ -19,9 +19,12 @@ impl SystemPrompt {
 
 impl Default for SystemPrompt {
     fn default() -> Self {
-        Self("
+        Self(
+            "
 You are a helpful assistant. You can use the following tools to help the user.
-        ".to_string())
+        "
+            .to_string(),
+        )
     }
 }
 

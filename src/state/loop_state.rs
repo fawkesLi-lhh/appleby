@@ -1,142 +1,86 @@
-use anthropic_ai_sdk::{
-    client::AnthropicClient,
-    types::message::{ContentBlock, Message, MessageContent},
-};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
-use std::fmt::Write;
 use tracing::info;
 
 use crate::{
-    state::{config::CONFIG, system_prompt::SYSTEM_PROMPT},
+    api_adapter::{ApiAdapter, ConversationMessage, ToolCallRecord},
+    state::{
+        config::CONFIG,
+        conversation_context::{
+            CONTEXT_FILE, CONTEXT_LOAD_LIMIT, archive_context_file, load_recent_messages,
+            open_context_log,
+        },
+        system_prompt::SYSTEM_PROMPT,
+    },
     tool::Tool,
+    utils::jsonl::JsonlLog,
 };
 
-fn format_message_for_log(message: &Message) -> String {
-    let mut output = String::new();
-    let _ = writeln!(output, "role: {:?}", message.role);
-
-    match &message.content {
-        MessageContent::Text { content } => {
-            let _ = writeln!(output, "content:");
-            write_indented(&mut output, content, "  ");
-        }
-        MessageContent::Blocks { content } => {
-            let _ = writeln!(output, "content blocks:");
-            for (index, block) in content.iter().enumerate() {
-                let _ = writeln!(output, "  [{index}]");
-                write_content_block_for_log(&mut output, block);
-            }
-        }
-    }
-
-    output.trim_end().to_string()
-}
-
-fn write_content_block_for_log(output: &mut String, block: &ContentBlock) {
-    match block {
-        ContentBlock::Text { text } => {
-            let _ = writeln!(output, "    type: text");
-            let _ = writeln!(output, "    text:");
-            write_indented(output, text, "      ");
-        }
-        ContentBlock::Image { source } => {
-            let _ = writeln!(output, "    type: image");
-            let _ = writeln!(output, "    media_type: {}", source.media_type);
-            let _ = writeln!(output, "    data: <{} bytes base64>", source.data.len());
-        }
-        ContentBlock::ToolUse { id, name, input } => {
-            let _ = writeln!(output, "    type: tool_use");
-            let _ = writeln!(output, "    id: {id}");
-            let _ = writeln!(output, "    name: {name}");
-            let _ = writeln!(output, "    input:");
-            let input = serde_json::to_string_pretty(input).unwrap_or_else(|_| input.to_string());
-            write_indented(output, &input, "      ");
-        }
-        ContentBlock::ToolResult {
-            tool_use_id,
-            content,
-        } => {
-            let _ = writeln!(output, "    type: tool_result");
-            let _ = writeln!(output, "    tool_use_id: {tool_use_id}");
-            let _ = writeln!(output, "    content:");
-            write_indented(output, content, "      ");
-        }
-        ContentBlock::Thinking {
-            thinking,
-            signature,
-        } => {
-            let _ = writeln!(output, "    type: thinking");
-            let _ = writeln!(output, "    thinking:");
-            write_indented(output, thinking, "      ");
-            let _ = writeln!(output, "    signature: {signature}");
-        }
-        ContentBlock::RedactedThinking { data } => {
-            let _ = writeln!(output, "    type: redacted_thinking");
-            let _ = writeln!(output, "    data: <{} bytes>", data.len());
-        }
-    }
-}
-
-fn write_indented(output: &mut String, text: &str, indent: &str) {
-    for line in text.lines() {
-        let _ = writeln!(output, "{indent}{line}");
-    }
-}
-
 pub struct LoopState {
-    pub client: AnthropicClient,
+    pub api_adapter: Box<dyn ApiAdapter>,
     pub tools: HashMap<String, Box<dyn Tool>>,
     pub model: String,
     pub system_prompt: String,
-    context: Vec<Message>,
-    random_id: i32,
+    context: Vec<ConversationMessage>,
+    context_log: JsonlLog,
 }
 
 impl LoopState {
-    pub fn new(client: AnthropicClient, tools: HashMap<String, Box<dyn Tool>>) -> Self {
-        let random_id = rand::random_range(1000000..9999999);
-        let model = CONFIG.anthropic_model.clone();
+    pub fn new(
+        api_adapter: Box<dyn ApiAdapter>,
+        tools: HashMap<String, Box<dyn Tool>>,
+        load_previous_context: bool,
+    ) -> Result<Self> {
+        let model = CONFIG.openai_model.clone();
         let system_prompt = (*SYSTEM_PROMPT).0.clone();
-        Self {
-            client,
-            context: Vec::new(),
+        let context = if load_previous_context {
+            load_recent_messages(CONTEXT_FILE, CONTEXT_LOAD_LIMIT)?
+        } else {
+            if let Some(archive_path) = archive_context_file(CONTEXT_FILE)? {
+                info!(
+                    archive_path = %archive_path.display(),
+                    "archived previous conversation context"
+                );
+            }
+            Vec::new()
+        };
+        let context_log = open_context_log(CONTEXT_FILE)?;
+
+        info!(
+            loaded_messages = context.len(),
+            load_previous_context, "initialized conversation context"
+        );
+
+        Ok(Self {
+            api_adapter,
+            context,
+            context_log,
             tools,
-            random_id,
             model,
             system_prompt,
-        }
+        })
     }
 
-    pub fn push_message(&mut self, message: Message) {
-        info!(
-            "Random ID: {}: Pushing message:\n{}",
-            self.random_id,
-            format_message_for_log(&message)
-        );
+    pub fn push_message(&mut self, message: ConversationMessage) -> Result<()> {
+        self.context_log
+            .append(&message)
+            .context("append message to conversation context log")?;
         self.context.push(message);
+        Ok(())
     }
 
-    pub fn get_context(&self) -> &Vec<Message> {
+    pub fn get_context(&self) -> &Vec<ConversationMessage> {
         &self.context
     }
 
-    pub async fn execute_tool_call(
+    pub async fn execute_tool_calls(
         &mut self,
-        content: &[ContentBlock],
-    ) -> Result<Vec<ContentBlock>> {
+        tool_calls: &[ToolCallRecord],
+    ) -> Result<Vec<ConversationMessage>> {
         let mut result = Vec::new();
-        for block in content {
-            match block {
-                ContentBlock::ToolUse { id, name, input } => {
-                    let output = self.execute(name, input).await?;
-                    result.push(ContentBlock::ToolResult {
-                        tool_use_id: id.clone(),
-                        content: output,
-                    });
-                }
-                _ => {}
-            }
+        for tool_call in tool_calls {
+            let output = self.execute(&tool_call.name, &tool_call.arguments).await?;
+            result.push(ConversationMessage::tool(tool_call.id.clone(), output));
         }
         Ok(result)
     }

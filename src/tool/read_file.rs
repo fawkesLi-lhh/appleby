@@ -1,9 +1,6 @@
 use std::{borrow::Cow, fmt::Write};
 
-use crate::{
-    ToolSpec,
-    tool::{Tool, safe_path},
-};
+use crate::tool::{Tool, ToolSpec, safe_path};
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -67,12 +64,12 @@ impl Tool for ReadFileTool {
     }
 
     fn name(&self) -> Cow<'_, str> {
-        "read_file".into()
+        "Read".into()
     }
 
     fn tool_spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "read_file".to_string(),
+            name: "Read".to_string(),
             description: Some(
                 "Read file contents. start_line and end_line are inclusive. start_line is 1-based. Include end_line, if chars is greater than 50000, it will be truncated. The line_number is numbered from 1. The file total line count is also included.".to_string(),
             ),
@@ -89,7 +86,10 @@ impl Tool for ReadFileTool {
     }
 
     fn show_to_human(&self, writer: &mut dyn Write, input: &Value) -> Result<(), anyhow::Error> {
-        let path = input.get("path").and_then(|v| v.as_str()).context("Invalid path")?;
+        let path = input
+            .get("path")
+            .and_then(|v| v.as_str())
+            .context("Invalid path")?;
         write!(writer, "Reading file: {}", path)?;
         Ok(())
     }

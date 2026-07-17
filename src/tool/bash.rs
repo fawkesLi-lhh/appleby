@@ -1,8 +1,8 @@
-use std::{borrow::Cow, fmt::Write, time::Duration};
-use crate::{ToolSpec, tool::Tool};
+use crate::tool::{Tool, ToolSpec};
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 use serde_json::Value;
+use std::{borrow::Cow, fmt::Write, time::Duration};
 use tokio::{process::Command, time::timeout};
 
 pub struct BashTool;
@@ -65,12 +65,12 @@ impl Tool for BashTool {
     }
 
     fn name(&self) -> Cow<'_, str> {
-        "bash".into()
+        "Bash".into()
     }
 
     fn tool_spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "bash".to_string(),
+            name: "Bash".to_string(),
             description: Some("Run a shell command in the current workspace.".to_string()),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -85,7 +85,10 @@ impl Tool for BashTool {
     }
 
     fn show_to_human(&self, writer: &mut dyn Write, input: &Value) -> Result<(), anyhow::Error> {
-        let command = input.get("command").and_then(|v| v.as_str()).context("Invalid command")?;
+        let command = input
+            .get("command")
+            .and_then(|v| v.as_str())
+            .context("Invalid command")?;
         write!(writer, "Bash Tool: {}", command)?;
         Ok(())
     }
@@ -101,8 +104,8 @@ mod tests {
         let tool = BashTool;
         let spec = tool.tool_spec();
 
-        assert_eq!(tool.name(), "bash");
-        assert_eq!(spec.name, "bash");
+        assert_eq!(tool.name(), "Bash");
+        assert_eq!(spec.name, "Bash");
         assert_eq!(spec.input_schema["required"], json!(["command"]));
     }
 

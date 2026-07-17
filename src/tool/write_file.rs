@@ -1,9 +1,6 @@
 use std::{borrow::Cow, fmt::Write};
 
-use crate::{
-    ToolSpec,
-    tool::{Tool, safe_path},
-};
+use crate::tool::{Tool, ToolSpec, safe_path};
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -46,12 +43,12 @@ impl Tool for WriteFileTool {
     }
 
     fn name(&self) -> Cow<'_, str> {
-        "write_file".into()
+        "Write".into()
     }
 
     fn tool_spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "write_file".to_string(),
+            name: "Write".to_string(),
             description: Some("Write content to file.".to_string()),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -65,7 +62,10 @@ impl Tool for WriteFileTool {
     }
 
     fn show_to_human(&self, writer: &mut dyn Write, input: &Value) -> Result<(), anyhow::Error> {
-        let path = input.get("path").and_then(|v| v.as_str()).context("Invalid path")?;
+        let path = input
+            .get("path")
+            .and_then(|v| v.as_str())
+            .context("Invalid path")?;
         write!(writer, "Writing file: {}", path)?;
         Ok(())
     }
