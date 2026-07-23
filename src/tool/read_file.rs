@@ -19,7 +19,9 @@ impl Tool for ReadFileTool {
             .get("path")
             .and_then(|v| v.as_str())
             .context("Invalid path")?;
-        let path = safe_path(path)?;
+        let Ok(path) = safe_path(path) else {
+            return Ok("Error: Invalid path".to_string());
+        };
 
         let start_line = input
             .get("start_line")

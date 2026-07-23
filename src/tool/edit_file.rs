@@ -47,9 +47,8 @@ impl Tool for EditFileTool {
             ));
         }
 
-        let updated;
-        if replace_all {
-            updated = content.replacen(old_string, new_string, content.matches(old_string).count());
+        let updated = if replace_all {
+            content.replacen(old_string, new_string, content.matches(old_string).count())
         } else {
             if old_string.is_empty()
                 || !content.contains(old_string)
@@ -59,8 +58,8 @@ impl Tool for EditFileTool {
                     "Error: old_string is empty, absent, or appears more than once"
                 ));
             }
-            updated = content.replacen(old_string, new_string, 1);
-        }
+            content.replacen(old_string, new_string, 1)
+        };
 
         fs::write(&file_path, updated)
             .await

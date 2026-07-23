@@ -32,7 +32,7 @@ pub fn toolmap() -> HashMap<String, Box<dyn Tool>> {
 }
 
 #[async_trait]
-pub trait Tool {
+pub trait Tool: Send + Sync {
     async fn invoke(&self, input: &Value) -> Result<String>;
     fn name(&self) -> Cow<'_, str>;
     fn tool_spec(&self) -> ToolSpec;

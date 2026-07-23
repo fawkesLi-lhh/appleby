@@ -8,10 +8,52 @@ use chrono::Local;
 
 use crate::{api_adapter::ConversationMessage, utils::jsonl::JsonlLog};
 
-pub const CONTEXT_FILE: &str = ".appleby/context.jsonl";
-pub const CONTEXT_LOAD_LIMIT: usize = 20;
+const CONTEXT_FILE_NAME: &str = "context.jsonl";
 
-pub fn load_recent_messages(
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum ContextLoadMode {
+    LoadRecent { limit: usize },
+    FreshArchive,
+}
+
+pub struct ConversationContext {
+    messages: Vec<ConversationMessage>,
+    log: JsonlLog,
+}
+
+impl ConversationContext {
+    pub fn open_in_dir(app_dir: impl AsRef<Path>, mode: ContextLoadMode) -> anyhow::Result<Self> {
+        Self::open_jsonl(app_dir.as_ref().join(CONTEXT_FILE_NAME), mode)
+    }
+
+    pub fn open_jsonl(path: impl AsRef<Path>, mode: ContextLoadMode) -> anyhow::Result<Self> {
+        let path = path.as_ref();
+        let messages = match mode {
+            ContextLoadMode::LoadRecent { limit } => load_recent_messages(path, limit)?,
+            ContextLoadMode::FreshArchive => {
+                archive_context_file(path)?;
+                Vec::new()
+            }
+        };
+        let log = open_context_log(path)?;
+
+        Ok(Self { messages, log })
+    }
+
+    pub fn push(&mut self, message: ConversationMessage) -> anyhow::Result<()> {
+        self.log
+            .append(&message)
+            .context("append message to conversation context log")?;
+        self.messages.push(message);
+        Ok(())
+    }
+
+    pub fn messages(&self) -> &[ConversationMessage] {
+        &self.messages
+    }
+}
+
+fn load_recent_messages(
     path: impl AsRef<Path>,
     limit: usize,
 ) -> anyhow::Result<Vec<ConversationMessage>> {
@@ -35,15 +77,9 @@ pub fn load_recent_messages(
             Ok(Some(message)) => messages.push(message),
             Ok(None) => break,
             Err(error) => {
-                drop(reader);
-                drop(log);
-                archive_context_file(path).with_context(|| {
-                    format!(
-                        "archive incompatible conversation context `{}` after read error: {error}",
-                        path.display()
-                    )
-                })?;
-                return Ok(Vec::new());
+                return Err(error).with_context(|| {
+                    format!("read conversation context from `{}`", path.display())
+                });
             }
         }
     }
@@ -52,7 +88,7 @@ pub fn load_recent_messages(
     Ok(messages)
 }
 
-pub fn archive_context_file(path: impl AsRef<Path>) -> anyhow::Result<Option<PathBuf>> {
+fn archive_context_file(path: impl AsRef<Path>) -> anyhow::Result<Option<PathBuf>> {
     let path = path.as_ref();
     if !path.exists() {
         return Ok(None);
@@ -70,7 +106,7 @@ pub fn archive_context_file(path: impl AsRef<Path>) -> anyhow::Result<Option<Pat
     Ok(Some(archive_path))
 }
 
-pub fn open_context_log(path: impl AsRef<Path>) -> anyhow::Result<JsonlLog> {
+fn open_context_log(path: impl AsRef<Path>) -> anyhow::Result<JsonlLog> {
     let path = path.as_ref();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| {
@@ -107,25 +143,44 @@ mod tests {
 
     use crate::api_adapter::ConversationMessage;
 
-    use super::{archive_context_file, load_recent_messages, open_context_log};
+    use super::{ContextLoadMode, ConversationContext};
+
+    #[test]
+    fn open_in_dir_uses_context_file_in_app_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let app_dir = temp.path().join("app-data");
+
+        let context =
+            ConversationContext::open_in_dir(&app_dir, ContextLoadMode::LoadRecent { limit: 20 })
+                .unwrap();
+
+        assert!(context.messages().is_empty());
+        assert!(app_dir.join("context.jsonl").exists());
+    }
 
     #[test]
     fn loads_recent_messages_in_chronological_order() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("context.jsonl");
-        let mut log = open_context_log(&path).unwrap();
+        let mut context =
+            ConversationContext::open_jsonl(&path, ContextLoadMode::LoadRecent { limit: 0 })
+                .unwrap();
 
         for index in 0..5 {
-            log.append(&ConversationMessage::user(format!("message-{index}")))
+            context
+                .push(ConversationMessage::user(format!("message-{index}")))
                 .unwrap();
         }
-        drop(log);
+        drop(context);
 
-        let messages = load_recent_messages(&path, 3).unwrap();
-        let contents: Vec<_> = messages
-            .into_iter()
+        let context =
+            ConversationContext::open_jsonl(&path, ContextLoadMode::LoadRecent { limit: 3 })
+                .unwrap();
+        let contents: Vec<_> = context
+            .messages()
+            .iter()
             .map(|message| match message {
-                ConversationMessage::User { content } => content,
+                ConversationMessage::User { content } => content.as_str(),
                 _ => unreachable!(),
             })
             .collect();
@@ -138,55 +193,36 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("missing.jsonl");
 
-        assert!(load_recent_messages(&path, 20).unwrap().is_empty());
-        assert!(!path.exists());
+        let context =
+            ConversationContext::open_jsonl(&path, ContextLoadMode::LoadRecent { limit: 20 })
+                .unwrap();
+        assert!(context.messages().is_empty());
+        assert!(path.exists());
 
-        let mut log = open_context_log(&path).unwrap();
-        log.append(&ConversationMessage::user("kept out")).unwrap();
-        drop(log);
+        let mut context =
+            ConversationContext::open_jsonl(&path, ContextLoadMode::LoadRecent { limit: 0 })
+                .unwrap();
+        context.push(ConversationMessage::user("kept out")).unwrap();
+        drop(context);
 
-        assert!(load_recent_messages(&path, 0).unwrap().is_empty());
+        let context =
+            ConversationContext::open_jsonl(&path, ContextLoadMode::LoadRecent { limit: 0 })
+                .unwrap();
+        assert!(context.messages().is_empty());
     }
 
     #[test]
-    fn archives_existing_context_file() {
+    fn fresh_archive_archives_existing_context_file() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("context.jsonl");
         fs::write(&path, "{\"content\":\"old\"}\n").unwrap();
 
-        let archive_path = archive_context_file(&path).unwrap().unwrap();
+        let context =
+            ConversationContext::open_jsonl(&path, ContextLoadMode::FreshArchive).unwrap();
 
-        assert!(!path.exists());
-        assert!(archive_path.exists());
-        assert!(archive_path.to_string_lossy().contains("context.jsonl."));
-        assert_eq!(
-            fs::read_to_string(archive_path).unwrap(),
-            "{\"content\":\"old\"}\n"
-        );
-    }
-
-    #[test]
-    fn archiving_missing_context_is_noop() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("context.jsonl");
-
-        assert!(archive_context_file(&path).unwrap().is_none());
-    }
-
-    #[test]
-    fn archives_incompatible_legacy_context_and_starts_empty() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join("context.jsonl");
-        fs::write(
-            &path,
-            "{\"role\":\"user\",\"content\":{\"unexpected\":\"legacy\"}}\n",
-        )
-        .unwrap();
-
-        let messages = load_recent_messages(&path, 20).unwrap();
-
-        assert!(messages.is_empty());
-        assert!(!path.exists());
+        assert!(context.messages().is_empty());
+        assert!(path.exists());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "");
         let archived = fs::read_dir(temp.path())
             .unwrap()
             .filter_map(Result::ok)
@@ -194,6 +230,46 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(
             archived
+                .iter()
+                .any(|name| name.starts_with("context.jsonl."))
+        );
+    }
+
+    #[test]
+    fn fresh_archive_missing_context_creates_empty_file() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("context.jsonl");
+
+        let context =
+            ConversationContext::open_jsonl(&path, ContextLoadMode::FreshArchive).unwrap();
+
+        assert!(context.messages().is_empty());
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn incompatible_legacy_context_returns_error_without_archiving() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("context.jsonl");
+        let legacy_content = "{\"role\":\"user\",\"content\":{\"unexpected\":\"legacy\"}}\n";
+        fs::write(&path, legacy_content).unwrap();
+
+        let result =
+            ConversationContext::open_jsonl(&path, ContextLoadMode::LoadRecent { limit: 20 });
+        let Err(error) = result else {
+            panic!("expected incompatible context to return an error");
+        };
+
+        assert!(error.to_string().contains("read conversation context"));
+        assert!(path.exists());
+        assert_eq!(fs::read_to_string(&path).unwrap(), legacy_content);
+        let archived = fs::read_dir(temp.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(
+            !archived
                 .iter()
                 .any(|name| name.starts_with("context.jsonl."))
         );

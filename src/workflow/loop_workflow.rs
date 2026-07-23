@@ -1,40 +1,68 @@
 use std::collections::HashSet;
 
+use anyhow::Result;
+
 use crate::{
     api_adapter::{ApiRequest, ConversationMessage, ToolCallRecord},
     state::loop_state::LoopState,
+    workflow::tui_channel::{AgentChannel, AgentEvent, TuiCommand},
 };
-use anyhow::Context;
-use inquire::Text;
 
-#[auto_context::auto_context]
-pub async fn loop_workflow(state: &mut LoopState) -> Result<(), anyhow::Error> {
-    loop {
-        let query = Text::new("Human: ")
-            .prompt()
-            .context("An error happened or user cancelled the input.")?;
+pub async fn agent_loop(mut state: LoopState, mut channel: AgentChannel) -> Result<()> {
+    let mut next_turn_id = 1;
 
-        if query.trim() == "exit()" {
-            break;
+    while let Some(command) = channel.recv().await {
+        match command {
+            TuiCommand::SubmitUserMessage { content } => {
+                let turn_id = next_turn_id;
+                next_turn_id += 1;
+                let user_message = ConversationMessage::user(content.clone());
+
+                if let Err(error) = state.push_message(user_message) {
+                    channel
+                        .send(AgentEvent::TurnFailed {
+                            turn_id,
+                            message: error.to_string(),
+                        })
+                        .await?;
+                    continue;
+                }
+
+                channel
+                    .send(AgentEvent::TurnStarted {
+                        turn_id,
+                        user_message: content,
+                    })
+                    .await?;
+
+                match run_turn(&mut state, turn_id, &channel).await {
+                    Ok(()) => channel.send(AgentEvent::TurnCompleted { turn_id }).await?,
+                    Err(error) => {
+                        channel
+                            .send(AgentEvent::TurnFailed {
+                                turn_id,
+                                message: error.to_string(),
+                            })
+                            .await?;
+                    }
+                }
+            }
+            TuiCommand::Shutdown => {
+                channel.send(AgentEvent::RunnerStopped).await?;
+                return Ok(());
+            }
         }
-        state.push_message(ConversationMessage::user(query))?;
-        agent_loop(state).await?;
-        let Some(final_content) = state
-            .get_context()
-            .last()
-            .and_then(ConversationMessage::assistant_text)
-        else {
-            continue;
-        };
-        println!("Assistant: {final_content}");
     }
+
     Ok(())
 }
 
-#[auto_context::auto_context]
-pub async fn agent_loop(state: &mut LoopState) -> Result<(), anyhow::Error> {
+async fn run_turn(state: &mut LoopState, turn_id: u64, channel: &AgentChannel) -> Result<()> {
     loop {
         let messages = normalize_messages(state.get_context());
+        channel
+            .send(AgentEvent::ModelRequestStarted { turn_id })
+            .await?;
         let response = state
             .api_adapter
             .complete(ApiRequest {
@@ -50,14 +78,30 @@ pub async fn agent_loop(state: &mut LoopState) -> Result<(), anyhow::Error> {
             ConversationMessage::Assistant { tool_calls, .. } => tool_calls.clone(),
             _ => Vec::new(),
         };
-        state.push_message(message)?;
+        state.push_message(message.clone())?;
+        channel
+            .send(AgentEvent::AssistantMessageCompleted { turn_id, message })
+            .await?;
 
         if tool_calls.is_empty() {
             return Ok(());
         }
 
-        for tool_result in state.execute_tool_calls(&tool_calls).await? {
-            state.push_message(tool_result)?;
+        for tool_call in tool_calls {
+            let presentation = state.describe_tool_call(&tool_call);
+            channel
+                .send(AgentEvent::ToolCallStarted {
+                    turn_id,
+                    call: tool_call.clone(),
+                    presentation,
+                })
+                .await?;
+
+            let result = state.execute_tool_call(&tool_call).await;
+            state.push_message(result.clone())?;
+            channel
+                .send(AgentEvent::ToolCallCompleted { turn_id, result })
+                .await?;
         }
     }
 }
@@ -161,9 +205,238 @@ fn push_mergeable_message(messages: &mut Vec<ConversationMessage>, message: Conv
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_messages;
-    use crate::api_adapter::{ConversationMessage, ToolCallRecord};
+    use std::{
+        borrow::Cow,
+        collections::{HashMap, VecDeque},
+        path::Path,
+        sync::Mutex,
+    };
+
+    use anyhow::Result;
+    use async_trait::async_trait;
     use serde_json::json;
+
+    use super::{agent_loop, normalize_messages};
+    use crate::{
+        api_adapter::{ApiAdapter, ApiRequest, ApiResponse, ConversationMessage, ToolCallRecord},
+        state::{
+            conversation_context::{ContextLoadMode, ConversationContext},
+            loop_state::LoopState,
+        },
+        tool::{Tool, ToolSpec},
+        workflow::tui_channel::{AgentEvent, TuiChannel, TuiCommand, tui_channel},
+    };
+
+    struct ScriptedAdapter {
+        responses: Mutex<VecDeque<ApiResponse>>,
+    }
+
+    #[async_trait]
+    impl ApiAdapter for ScriptedAdapter {
+        async fn complete(&self, _request: ApiRequest) -> Result<ApiResponse> {
+            self.responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or_else(|| anyhow::anyhow!("scripted adapter ran out of responses"))
+        }
+    }
+
+    struct TestTool;
+
+    #[async_trait]
+    impl Tool for TestTool {
+        async fn invoke(&self, _input: &serde_json::Value) -> Result<String> {
+            Ok("tool output".to_string())
+        }
+
+        fn name(&self) -> Cow<'_, str> {
+            Cow::Borrowed("Test")
+        }
+
+        fn tool_spec(&self) -> ToolSpec {
+            ToolSpec {
+                name: "Test".to_string(),
+                description: None,
+                input_schema: json!({"type": "object"}),
+            }
+        }
+
+        fn show_to_human(
+            &self,
+            writer: &mut dyn std::fmt::Write,
+            input: &serde_json::Value,
+        ) -> Result<()> {
+            write!(writer, " test input: {input}")?;
+            Ok(())
+        }
+    }
+
+    fn build_state(
+        path: &Path,
+        responses: Vec<ApiResponse>,
+        tools: HashMap<String, Box<dyn Tool>>,
+    ) -> LoopState {
+        let context = ConversationContext::open_jsonl(path, ContextLoadMode::FreshArchive).unwrap();
+        LoopState::new(
+            Box::new(ScriptedAdapter {
+                responses: Mutex::new(responses.into()),
+            }),
+            tools,
+            "test-model".to_string(),
+            "test system prompt".to_string(),
+            context,
+        )
+    }
+
+    async fn collect_turn(channel: &mut TuiChannel) -> Vec<AgentEvent> {
+        let mut events = Vec::new();
+        while let Some(event) = channel.recv().await {
+            let completed = matches!(
+                event,
+                AgentEvent::TurnCompleted { .. } | AgentEvent::TurnFailed { .. }
+            );
+            events.push(event);
+            if completed {
+                return events;
+            }
+        }
+        panic!("agent loop stopped before completing the turn");
+    }
+
+    async fn shutdown(channel: &mut TuiChannel) {
+        channel.send(TuiCommand::Shutdown).await.unwrap();
+        assert!(matches!(
+            channel.recv().await,
+            Some(AgentEvent::RunnerStopped)
+        ));
+    }
+
+    #[tokio::test]
+    async fn agent_loop_persists_and_emits_a_text_only_turn() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("context.jsonl");
+        let state = build_state(
+            &path,
+            vec![ApiResponse {
+                assistant_message: ConversationMessage::assistant(
+                    Some("hello".to_string()),
+                    Vec::new(),
+                ),
+            }],
+            HashMap::new(),
+        );
+        let (agent_channel, mut tui_channel) = tui_channel();
+        let agent_task = tokio::spawn(agent_loop(state, agent_channel));
+
+        tui_channel
+            .send(TuiCommand::SubmitUserMessage {
+                content: "hi".to_string(),
+            })
+            .await
+            .unwrap();
+        let events = collect_turn(&mut tui_channel).await;
+
+        assert!(matches!(
+            events.as_slice(),
+            [
+                AgentEvent::TurnStarted { turn_id: 1, .. },
+                AgentEvent::ModelRequestStarted { turn_id: 1 },
+                AgentEvent::AssistantMessageCompleted { turn_id: 1, .. },
+                AgentEvent::TurnCompleted { turn_id: 1 },
+            ]
+        ));
+
+        shutdown(&mut tui_channel).await;
+        agent_task.await.unwrap().unwrap();
+
+        let context =
+            ConversationContext::open_jsonl(&path, ContextLoadMode::LoadRecent { limit: 10 })
+                .unwrap();
+        assert_eq!(
+            context.messages(),
+            [
+                ConversationMessage::user("hi"),
+                ConversationMessage::assistant(Some("hello".to_string()), Vec::new()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_loop_emits_tool_events_and_persists_tool_results_before_follow_up() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("context.jsonl");
+        let call = ToolCallRecord {
+            id: "call-1".to_string(),
+            name: "Test".to_string(),
+            arguments: json!({"value": "input"}),
+        };
+        let state = build_state(
+            &path,
+            vec![
+                ApiResponse {
+                    assistant_message: ConversationMessage::assistant(
+                        Some("running a tool".to_string()),
+                        vec![call.clone()],
+                    ),
+                },
+                ApiResponse {
+                    assistant_message: ConversationMessage::assistant(
+                        Some("finished".to_string()),
+                        Vec::new(),
+                    ),
+                },
+            ],
+            HashMap::from([("Test".to_string(), Box::new(TestTool) as Box<dyn Tool>)]),
+        );
+        let (agent_channel, mut tui_channel) = tui_channel();
+        let agent_task = tokio::spawn(agent_loop(state, agent_channel));
+
+        tui_channel
+            .send(TuiCommand::SubmitUserMessage {
+                content: "run test".to_string(),
+            })
+            .await
+            .unwrap();
+        let events = collect_turn(&mut tui_channel).await;
+
+        assert!(matches!(
+            events.as_slice(),
+            [
+                AgentEvent::TurnStarted { turn_id: 1, .. },
+                AgentEvent::ModelRequestStarted { turn_id: 1 },
+                AgentEvent::AssistantMessageCompleted { turn_id: 1, .. },
+                AgentEvent::ToolCallStarted {
+                    turn_id: 1,
+                    call: started_call,
+                    presentation,
+                },
+                AgentEvent::ToolCallCompleted {
+                    turn_id: 1,
+                    result: ConversationMessage::Tool { .. },
+                },
+                AgentEvent::ModelRequestStarted { turn_id: 1 },
+                AgentEvent::AssistantMessageCompleted { turn_id: 1, .. },
+                AgentEvent::TurnCompleted { turn_id: 1 },
+            ] if started_call == &call && presentation == " test input: {\"value\":\"input\"}"
+        ));
+
+        shutdown(&mut tui_channel).await;
+        agent_task.await.unwrap().unwrap();
+
+        let context =
+            ConversationContext::open_jsonl(&path, ContextLoadMode::LoadRecent { limit: 10 })
+                .unwrap();
+        assert_eq!(
+            context.messages(),
+            [
+                ConversationMessage::user("run test"),
+                ConversationMessage::assistant(Some("running a tool".to_string()), vec![call]),
+                ConversationMessage::tool("call-1", "tool output"),
+                ConversationMessage::assistant(Some("finished".to_string()), Vec::new()),
+            ]
+        );
+    }
 
     fn read_call(id: &str) -> ToolCallRecord {
         ToolCallRecord {

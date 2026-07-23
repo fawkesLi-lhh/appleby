@@ -1,14 +1,16 @@
 use anyhow::Context;
 use appleby::{
     api_adapter::{ApiAdapter, ApiRequest, ConversationMessage, openai::OpenAiAdapter},
-    state::config::CONFIG,
+    state::config::Config,
     tool::toolmap,
 };
+
+const APP_DIR: &str = ".appleby";
 
 #[auto_context::auto_context]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let config = CONFIG.clone();
+    let config = Config::load_or_create_in_dir(APP_DIR)?;
     println!(
         "config: model={}, base_url={}",
         config.openai_model, config.openai_base_url
